@@ -1,14 +1,24 @@
-const Transaction = require("./transaction");
-const Header = require("./header");
-const BlockLite = require("./blocklite");
-const {
-  BufferReader,
-  BufferChunksReader,
-  BufferWriter,
-  Hash,
-} = require("./utils");
+import Transaction from "./transaction";
+import Header from "./header";
+import BlockLite from "./blocklite";
+import { BufferReader, BufferChunksReader, BufferWriter, Hash } from "./utils";
 
-class Block {
+export default class Block {
+  txRead;
+  size;
+  options;
+  merkleArray: Buffer[][];
+
+  header?: Header;
+  txCount?: number;
+  txPos?: number;
+  buffer?: Buffer;
+  hash?: string;
+  transactions?: Buffer[];
+  computedMerkleRoot?: string;
+  br?: BufferChunksReader;
+  height?: number;
+
   constructor(options = {}) {
     this.txRead = 0;
     this.size = 0;
@@ -16,7 +26,7 @@ class Block {
     this.merkleArray = [[]];
   }
 
-  static fromBuffer(buf) {
+  static fromBuffer(buf: Buffer) {
     const br = new BufferReader(buf);
     const block = new Block();
     block.header = Header.fromBufferReader(br);
@@ -46,7 +56,7 @@ class Block {
   }
 
   getHash() {
-    if (!this.hash) {
+    if (!this.hash && this.header) {
       this.hash = this.header.getHash();
     }
     return this.hash;
@@ -97,7 +107,7 @@ class Block {
     }
   }
 
-  addMerkleHash(index, hash) {
+  addMerkleHash(index: number, hash: string) {
     const { merkleArray, computedMerkleRoot, txCount } = this;
     if (computedMerkleRoot) return;
     merkleArray[0].push(Buffer.from(hash).reverse());
@@ -128,9 +138,16 @@ class Block {
     calculate();
   }
 
-  async getTransactionsAsync(callback) {
+  async getTransactionsAsync(
+    callback: (args: {
+      transactions: Array<Array<number | Buffer>>;
+      finished: boolean;
+      started: boolean;
+      header: Header;
+    }) => Promise<void>
+  ) {
     const { txPos, txCount, transactions, header, options } = this;
-    if (transactions) {
+    if (transactions && header) {
       await callback({
         transactions: transactions.map((tx, index) => {
           if (options.validate) {
@@ -188,7 +205,7 @@ class Block {
     return this.txCount !== undefined && this.txRead === this.txCount;
   }
 
-  addBufferChunk(buf) {
+  addBufferChunk(buf: Buffer) {
     // TODO: Detect and stop on corrupt data
     if (!this.br) {
       this.br = new BufferChunksReader(buf);
@@ -236,7 +253,7 @@ class Block {
           this.txRead = index + 1;
         }
       } catch (err) {
-        this.br.rewind(this.br.pos - prePos);
+        this.br?.rewind(this.br.pos - prePos);
       }
     }
     this.br.trim();
@@ -255,5 +272,3 @@ class Block {
     };
   }
 }
-
-module.exports = Block;
