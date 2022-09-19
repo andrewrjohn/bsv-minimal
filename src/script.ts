@@ -1,34 +1,33 @@
-const { BufferReader, Opcode, Hash, Base58 } = require("./utils");
+import { BufferReader, Opcode, Hash, Base58 } from "./utils";
 
 const NETWORK_BUF = {
   testnet: Buffer.from([0x6f]),
   mainnet: Buffer.from([0x00]),
 };
 
-class Script {
-  static fromBuffer(buf, options) {
-    const br = new BufferReader(buf);
-    return this.fromBufferReader(br, options);
-  }
+export interface ScriptChunk {
+  opcodenum: number;
+  buf?: Buffer;
+  len?: number;
+}
 
-  static fromBufferReader(br, options = { opreturn: false }) {
-    const script = new Script();
-    script.chunks = [];
-    script.buffer = br.buf;
-    if (br.eof()) return options.opreturn ? false : script;
-    if (options.opreturn) {
-      let opcodenum = br.readUInt8();
-      if (opcodenum === Opcode.OP_FALSE) {
-        script.chunks.push({ opcodenum });
-        if (!br.eof()) {
-          opcodenum = br.readUInt8();
-        }
-      }
-      if (opcodenum !== Opcode.OP_RETURN) {
-        return false;
-      }
-      script.chunks.push({ opcodenum });
-    }
+export interface ScriptFromBufferOptions {
+  opreturn: boolean;
+}
+
+export default class Script {
+  chunks: ScriptChunk[];
+  buffer: any;
+  opreturn: any;
+
+  private constructor(
+    br: BufferReader,
+    chunks: ScriptChunk[],
+    options: ScriptFromBufferOptions
+  ) {
+    this.chunks = chunks;
+    this.buffer = br.buf;
+
     while (!br.finished()) {
       try {
         const opcodenum = br.readUInt8();
@@ -36,7 +35,7 @@ class Script {
         let len, buf;
         if (opcodenum > 0 && opcodenum < Opcode.OP_PUSHDATA1) {
           len = opcodenum;
-          script.chunks.push({
+          this.chunks.push({
             buf: br.read(len),
             len: len,
             opcodenum: opcodenum,
@@ -44,7 +43,7 @@ class Script {
         } else if (opcodenum === Opcode.OP_PUSHDATA1) {
           len = br.readUInt8();
           buf = br.read(len);
-          script.chunks.push({
+          this.chunks.push({
             buf: buf,
             len: len,
             opcodenum: opcodenum,
@@ -52,7 +51,7 @@ class Script {
         } else if (opcodenum === Opcode.OP_PUSHDATA2) {
           len = br.readUInt16LE();
           buf = br.read(len);
-          script.chunks.push({
+          this.chunks.push({
             buf: buf,
             len: len,
             opcodenum: opcodenum,
@@ -60,13 +59,13 @@ class Script {
         } else if (opcodenum === Opcode.OP_PUSHDATA4) {
           len = br.readUInt32LE();
           buf = br.read(len);
-          script.chunks.push({
+          this.chunks.push({
             buf: buf,
             len: len,
             opcodenum: opcodenum,
           });
         } else {
-          script.chunks.push({
+          this.chunks.push({
             opcodenum: opcodenum,
           });
         }
@@ -77,7 +76,35 @@ class Script {
         throw err;
       }
     }
-    return script;
+  }
+
+  static fromBuffer(buf: Buffer, options?: ScriptFromBufferOptions) {
+    const br = new BufferReader(buf);
+    return this.fromBufferReader(br, options);
+  }
+
+  static fromBufferReader(
+    br: BufferReader,
+    options: ScriptFromBufferOptions = { opreturn: false }
+  ) {
+    const chunks = [];
+
+    if (br.eof()) return options.opreturn ? undefined : this;
+    if (options.opreturn) {
+      let opcodenum = br.readUInt8();
+      if (opcodenum === Opcode.OP_FALSE) {
+        chunks.push({ opcodenum });
+        if (!br.eof()) {
+          opcodenum = br.readUInt8();
+        }
+      }
+      if (opcodenum !== Opcode.OP_RETURN) {
+        return undefined;
+      }
+      chunks.push({ opcodenum });
+    }
+
+    return new Script(br, chunks, options);
   }
 
   getOpReturn() {
@@ -85,7 +112,7 @@ class Script {
     const chunks = [...this.chunks];
     this.opreturn = [];
     let chunk = chunks.shift();
-    if (chunk.opcodenum === Opcode.OP_FALSE) {
+    if (chunk?.opcodenum === Opcode.OP_FALSE) {
       chunk = chunks.shift();
     }
     while (chunks.length > 0) {
@@ -93,12 +120,12 @@ class Script {
       while (chunks.length > 0) {
         chunk = chunks.shift();
         if (
-          chunk.buf &&
+          chunk?.buf &&
           chunk.buf.length === 1 &&
           chunk.buf.toString() === "|"
         ) {
           break;
-        } else if (chunk.buf) {
+        } else if (chunk?.buf) {
           bufs.push(chunk.buf);
         } else {
           bufs.push(Buffer.from(""));
@@ -127,7 +154,7 @@ class Script {
         });
       } else if (bitcom === "1PuQa7K62MiKCtssSLKy1kh56WWU7MtUR5") {
         const type = cell.shift();
-        const map = {};
+        const map: Record<string, string> = {};
         while (cell.length > 0) {
           const key = cell.shift().toString();
           const value = cell.shift();
@@ -191,7 +218,7 @@ class Script {
     return false;
   }
 
-  toAddress(network = "mainnet") {
+  toAddress(network: keyof typeof NETWORK_BUF = "mainnet") {
     const addressBuf = this.toAddressBuf();
     if (addressBuf) {
       let buf = Buffer.concat([NETWORK_BUF[network], addressBuf]);
@@ -202,5 +229,3 @@ class Script {
     return false;
   }
 }
-
-module.exports = Script;

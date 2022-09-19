@@ -1,15 +1,25 @@
 import { BufferReader, Hash } from "./utils";
 
 export default class Header {
-  // TODO: Should this be buffer or number
-  version?: Buffer;
-  prevHash?: any;
-  merkleRoot?: any;
-  time?: any;
-  bits?: any;
-  nonce?: any;
-  buffer?: any;
-  hash?: any;
+  version: Buffer;
+  prevHash: Buffer;
+  merkleRoot: Buffer;
+  time: number;
+  bits: Buffer;
+  nonce: number;
+  buffer: Buffer;
+  hash?: Buffer;
+
+  private constructor(br: BufferReader) {
+    const startPos = br.pos;
+    this.version = br.readReverse(4);
+    this.prevHash = br.readReverse(32);
+    this.merkleRoot = br.readReverse(32);
+    this.time = br.readUInt32LE();
+    this.bits = br.readReverse(4);
+    this.nonce = br.readUInt32LE();
+    this.buffer = br.slice(startPos, br.pos);
+  }
 
   static fromBuffer(buf: Buffer) {
     const br = new BufferReader(buf);
@@ -17,16 +27,7 @@ export default class Header {
   }
 
   static fromBufferReader(br: BufferReader) {
-    const header = new Header();
-    const startPos = br.pos;
-    header.version = br.readReverse(4);
-    header.prevHash = br.readReverse(32);
-    header.merkleRoot = br.readReverse(32);
-    header.time = br.readUInt32LE();
-    header.bits = br.readReverse(4);
-    header.nonce = br.readUInt32LE();
-    header.buffer = br.slice(startPos, br.pos);
-    return header;
+    return new Header(br);
   }
 
   toBuffer() {
@@ -34,10 +35,8 @@ export default class Header {
   }
 
   getHash() {
-    if (!this.hash) {
-      const buf = this.toBuffer();
-      this.hash = Hash.sha256sha256(buf).reverse();
-    }
+    const buf = this.toBuffer();
+    this.hash = Hash.sha256sha256(buf).reverse();
     return this.hash;
   }
 }

@@ -3,6 +3,10 @@ import Header from "./header";
 import BlockLite from "./blocklite";
 import { BufferReader, BufferChunksReader, BufferWriter, Hash } from "./utils";
 
+interface Options {
+  validate: boolean;
+}
+
 export default class Block {
   txRead;
   size;
@@ -13,13 +17,13 @@ export default class Block {
   txCount?: number;
   txPos?: number;
   buffer?: Buffer;
-  hash?: string;
-  transactions?: Buffer[];
-  computedMerkleRoot?: string;
+  hash?: Buffer;
+  transactions?: Transaction[];
+  computedMerkleRoot?: Buffer;
   br?: BufferChunksReader;
   height?: number;
 
-  constructor(options = {}) {
+  constructor(options?: Options) {
     this.txRead = 0;
     this.size = 0;
     this.options = options;
@@ -37,7 +41,7 @@ export default class Block {
     return block;
   }
 
-  static fromBlockLite(blockLite, transactions) {
+  static fromBlockLite(blockLite: BlockLite, transactions: Transaction[]) {
     const bw = new BufferWriter();
     bw.write(blockLite.header.toBuffer());
     bw.writeVarintNum(blockLite.txCount);
@@ -56,9 +60,11 @@ export default class Block {
   }
 
   getHash() {
-    if (!this.hash && this.header) {
-      this.hash = this.header.getHash();
-    }
+    if (this.hash) return this.hash;
+    if (!this.header) throw Error("Missing block header!");
+
+    this.hash = this.header.getHash();
+
     return this.hash;
   }
 
@@ -67,31 +73,40 @@ export default class Block {
     this.transactions = [];
     const { txPos, txCount } = this;
     const buf = this.toBuffer();
-    const br = new BufferReader(buf);
-    br.read(txPos);
-    for (let i = 0; i < txCount; i++) {
-      const transaction = Transaction.fromBufferReader(br);
-      this.transactions.push(transaction);
-      this.txRead = i + 1;
+
+    if (buf && txPos && txCount) {
+      const br = new BufferReader(buf);
+      br.read(txPos);
+      for (let i = 0; i < txCount; i++) {
+        const transaction = Transaction.fromBufferReader(br);
+        this.transactions.push(transaction);
+        this.txRead = i + 1;
+      }
+      return this.transactions;
     }
-    return this.transactions;
   }
 
   getHeight() {
     // https://en.bitcoin.it/wiki/BIP_0034
-    if (Buffer.compare(Buffer.from([0, 0, 0, 1]), this.header.version) === 0) {
-      throw Error("No height in v1 blocks");
+    if (this.header?.version) {
+      if (
+        Buffer.compare(Buffer.from([0, 0, 0, 1]), this.header.version) === 0
+      ) {
+        throw Error("No height in v1 blocks");
+      }
+      const { txPos } = this;
+      const buf = this.toBuffer();
+      if (buf && txPos) {
+        const br = new BufferReader(buf);
+        br.read(txPos);
+        const transaction = Transaction.fromBufferReader(br);
+        return transaction.getCoinbaseHeight();
+      }
     }
-    const { txPos } = this;
-    const buf = this.toBuffer();
-    const br = new BufferReader(buf);
-    br.read(txPos);
-    const transaction = Transaction.fromBufferReader(br);
-    return transaction.getCoinbaseHeight();
   }
 
   validate() {
-    if (this.computedMerkleRoot) {
+    if (this.computedMerkleRoot && this.header?.merkleRoot) {
       if (
         Buffer.compare(this.computedMerkleRoot, this.header.merkleRoot) !== 0
       ) {
@@ -100,18 +115,19 @@ export default class Block {
       // console.log(`Merkle root is valid`)
     } else if (this.transactions) {
       for (const transaction of this.transactions) {
-        this.addMerkleHash(transaction.getHash());
+        // TODO: Is setting this index to 0 ok?
+        this.addMerkleHash(0, transaction.getHash());
       }
     } else {
       throw new Error(`Must call addMerkleHash on all transactions first`);
     }
   }
 
-  addMerkleHash(index: number, hash: string) {
+  addMerkleHash(index: number, hash: Buffer) {
     const { merkleArray, computedMerkleRoot, txCount } = this;
     if (computedMerkleRoot) return;
     merkleArray[0].push(Buffer.from(hash).reverse());
-    const finished = index + 1 >= txCount;
+    const finished = txCount && index + 1 >= txCount;
 
     const calculate = (height = 0) => {
       if (
@@ -128,11 +144,14 @@ export default class Block {
       if (finished || merkleArray[height].length === 2) {
         const first = merkleArray[height].shift();
         const second = merkleArray[height].shift() || first;
-        const concat = Buffer.concat([first, second]);
-        const hash = Hash.sha256sha256(concat);
-        if (!merkleArray[height + 1]) merkleArray.push([]);
-        merkleArray[height + 1].push(hash);
-        calculate(height + 1);
+
+        if (first && second) {
+          const concat = Buffer.concat([first, second]);
+          const hash = Hash.sha256sha256(concat);
+          if (!merkleArray[height + 1]) merkleArray.push([]);
+          merkleArray[height + 1].push(hash);
+          calculate(height + 1);
+        }
       }
     };
     calculate();
@@ -150,7 +169,7 @@ export default class Block {
     if (transactions && header) {
       await callback({
         transactions: transactions.map((tx, index) => {
-          if (options.validate) {
+          if (options?.validate) {
             this.addMerkleHash(index, tx.getHash());
           }
           return [index, tx];
@@ -161,28 +180,32 @@ export default class Block {
       });
     } else if (txPos) {
       const buf = this.toBuffer();
-      const br = new BufferReader(buf);
-      br.read(txPos);
-      if (txCount === 0) {
-        await callback({
-          transactions: [],
-          finished: true,
-          started: true,
-          header,
-        });
-      } else {
-        for (let index = 0; index < txCount; index++) {
-          const transaction = Transaction.fromBufferReader(br);
-          this.txRead = index + 1;
-          if (options.validate) {
-            this.addMerkleHash(index, transaction.getHash());
-          }
+      if (buf) {
+        const br = new BufferReader(buf);
+        br.read(txPos);
+        if (txCount === 0 && header) {
           await callback({
-            transactions: [[index, transaction]],
-            finished: this.finished(),
-            started: index === 0,
+            transactions: [],
+            finished: true,
+            started: true,
             header,
           });
+        }
+      } else {
+        if (txCount && header) {
+          for (let index = 0; index < txCount; index++) {
+            const transaction = Transaction.fromBufferReader(this.br);
+            this.txRead = index + 1;
+            if (options?.validate) {
+              this.addMerkleHash(index, transaction.getHash());
+            }
+            await callback({
+              transactions: [[index, transaction]],
+              finished: this.finished(),
+              started: index === 0,
+              header,
+            });
+          }
         }
       }
     } else {
@@ -199,7 +222,7 @@ export default class Block {
   }
 
   finished() {
-    if (this.txRead > this.txCount) {
+    if (this.txCount && this.txRead > this.txCount) {
       throw new Error(`Block is corrupted`);
     }
     return this.txCount !== undefined && this.txRead === this.txCount;
@@ -238,11 +261,12 @@ export default class Block {
           const transaction = Transaction.fromBufferReader(this.br);
           transactions.push([index, transaction]);
 
-          if (this.options.validate) {
+          if (this.options?.validate) {
             this.addMerkleHash(index, transaction.getHash());
           }
           if (
             index === 0 &&
+            this.header?.version &&
             Buffer.compare(Buffer.from([0, 0, 0, 1]), this.header.version) !== 0
           ) {
             // https://en.bitcoin.it/wiki/BIP_0034
@@ -253,7 +277,9 @@ export default class Block {
           this.txRead = index + 1;
         }
       } catch (err) {
-        this.br?.rewind(this.br.pos - prePos);
+        if (prePos) {
+          this.br?.rewind(this.br.pos - prePos);
+        }
       }
     }
     this.br.trim();
